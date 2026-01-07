@@ -1,0 +1,16 @@
+name: Build SW Tool
+on: [push]
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+      - name: Compile
+        run: cl.exe /EHsc /O2 main.cpp /fe:SW_Tuner.exe user32.lib gdi32.lib
+      - name: Upload Result
+        uses: actions/upload-artifact@v4
+        with:
+          name: Stormworks_Tool
+          path: SW_Tuner.exe
