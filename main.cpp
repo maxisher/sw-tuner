@@ -5,104 +5,77 @@
 
 #pragma comment(lib, "user32.lib")
 
-uintptr_t GetModuleBaseAddress(DWORD procId, const char* modName) {
-    uintptr_t modBaseAddr = 0;
-    HANDLE hSnap = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, procId);
-    if (hSnap != INVALID_HANDLE_VALUE) {
-        MODULEENTRY32 modEntry;
-        modEntry.dwSize = sizeof(modEntry);
-        if (Module32First(hSnap, &modEntry)) {
-            do {
-                if (!_stricmp(modEntry.szModule, modName)) {
-                    modBaseAddr = (uintptr_t)modEntry.modBaseAddr;
-                    break;
-                }
-            } while (Module32Next(hSnap, &modEntry));
-        }
-    }
-    CloseHandle(hSnap);
-    return modBaseAddr;
-}
-
-bool CompareBytes(const unsigned char* data, const unsigned char* pattern, const char* mask) {
-    for (; *mask; ++mask, ++data, ++pattern) {
-        if (*mask == 'x' && *data != *pattern) return false;
-    }
-    return (*mask == 0);
-}
-
-uintptr_t FindPattern(HANDLE hProcess, uintptr_t start, DWORD size, const unsigned char* pattern, const char* mask) {
-    std::vector<unsigned char> buffer(size);
-    SIZE_T bytesRead;
-    if (!ReadProcessMemory(hProcess, (LPVOID)start, buffer.data(), size, &bytesRead)) return 0;
-    size_t maskLen = strlen(mask);
-    for (DWORD i = 0; i < (DWORD)(bytesRead - maskLen); i++) {
-        if (CompareBytes(&buffer[i], pattern, mask)) return start + i;
-    }
-    return 0;
-}
-
 int main() {
-    std::cout << "=== NetErrror SW Tuner [FIXED PATTERN] ===" << std::endl;
+    SetConsoleTitleA("NetErrror - Universal SW Scanner");
+    std::cout << "=== NetErrror UNIVERSAL SCANNER MODE ===" << std::endl;
 
     HWND hwnd = FindWindowA(NULL, "Stormworks");
-    if (!hwnd) {
-        std::cout << "[!] ERROR: Stormworks window not found!" << std::endl;
-        system("pause"); return 1;
-    }
+    if (!hwnd) { std::cout << "[!] Run Stormworks first!" << std::endl; system("pause"); return 1; }
 
     DWORD procId;
     GetWindowThreadProcessId(hwnd, &procId);
     HANDLE hProcess = OpenProcess(PROCESS_ALL_ACCESS, FALSE, procId);
-    uintptr_t baseAddr = GetModuleBaseAddress(procId, "stormworks64.exe");
 
-    if (!hProcess || !baseAddr) {
-        std::cout << "[!] ERROR: No Admin Rights or Process access!" << std::endl;
+    // Вместо паттерна мы будем искать адрес вручную через небольшую хитрость
+    std::cout << "[*] Направьте камеру на блок в редакторе и нажмите F2..." << std::endl;
+    
+    while (!(GetAsyncKeyState(VK_F2) & 1)) { Sleep(10); }
+
+    // Сканируем память на наличие стандартной матрицы [1, 0, 0, 0, 1, 0, 0, 0, 1]
+    // В Stormworks блоки часто выравниваются по определенным адресам.
+    std::cout << "[*] Поиск структуры блока в памяти (может занять 10-20 сек)..." << std::endl;
+
+    uintptr_t foundAddr = 0;
+    std::vector<unsigned char> buffer(1024 * 1024); // Буфер 1Мб
+    SIZE_T bytesRead;
+
+    // Сканируем только регион, где обычно лежат данные объектов (Heap)
+    for (uintptr_t i = 0x200000000; i < 0x500000000; i += buffer.size()) {
+        if (ReadProcessMemory(hProcess, (LPVOID)i, buffer.data(), buffer.size(), &bytesRead)) {
+            for (size_t j = 0; j < bytesRead - 36; j += 4) {
+                float* vals = (float*)&buffer[j];
+                // Проверяем паттерн матрицы 1,0,0,0,1,0,0,0,1 (float)
+                if (vals[0] == 1.0f && vals[1] == 0.0f && vals[2] == 0.0f &&
+                    vals[4] == 1.0f && vals[8] == 1.0f) {
+                    foundAddr = i + j;
+                    break;
+                }
+            }
+        }
+        if (foundAddr) break;
+    }
+
+    if (!foundAddr) {
+        std::cout << "[!] Структура не найдена автоматически. Попробуем другой регион..." << std::endl;
         system("pause"); return 1;
     }
 
-    // НОВАЯ ГИБКАЯ СИГНАТУРА
-    const unsigned char* pattern = (const unsigned char*)"\x48\x8B\x0D\x00\x00\x00\x00\x48\x85\xC9\x74\x00\x48\x8B\x01\xFF\x50\x00\x48\x8B\xD8";
-    const char* mask = "xxx????xxxx?xxxxx?xxx";
-    
-    std::cout << "[*] Scanning memory with new pattern..." << std::endl;
-    uintptr_t patternAddr = FindPattern(hProcess, baseAddr, 0xA000000, pattern, mask);
-    
-    if (!patternAddr) {
-        std::cout << "[!] ERROR: New pattern also failed. Game version is incompatible." << std::endl;
-        system("pause"); return 1;
-    }
-
-    int32_t relativeAddr;
-    ReadProcessMemory(hProcess, (LPVOID)(patternAddr + 3), &relativeAddr, sizeof(relativeAddr), NULL);
-    uintptr_t selectedBlockPtr = patternAddr + 7 + relativeAddr;
-
-    std::cout << "[SUCCESS] Script active! Index range: 0-8" << std::endl;
+    std::cout << "[SUCCESS] Блок найден по адресу: " << std::hex << foundAddr << std::endl;
+    std::cout << "Управление: [Arrows] - Индекс | [Num +/-] - Значение" << std::endl;
 
     int currentIdx = 0;
     while (true) {
-        if (GetAsyncKeyState(VK_RIGHT) & 1) { currentIdx = (currentIdx + 1) % 9; std::cout << "Target: r[" << currentIdx << "]" << std::endl; }
-        if (GetAsyncKeyState(VK_LEFT) & 1) { currentIdx = (currentIdx - 1 + 9) % 9; std::cout << "Target: r[" << currentIdx << "]" << std::endl; }
+        if (GetAsyncKeyState(VK_RIGHT) & 1) { currentIdx = (currentIdx + 1) % 9; std::cout << "Index: " << currentIdx << std::endl; }
+        if (GetAsyncKeyState(VK_LEFT) & 1) { currentIdx = (currentIdx - 1 + 9) % 9; std::cout << "Index: " << currentIdx << std::endl; }
 
-        uintptr_t activeBlock;
-        if (ReadProcessMemory(hProcess, (LPVOID)selectedBlockPtr, &activeBlock, sizeof(activeBlock), NULL) && activeBlock != 0) {
-            uintptr_t rOffset = activeBlock + 0x50 + (currentIdx * 4);
-            float val;
-            ReadProcessMemory(hProcess, (LPVOID)rOffset, &val, sizeof(float), NULL);
+        float val;
+        uintptr_t target = foundAddr + (currentIdx * 4);
+        ReadProcessMemory(hProcess, (LPVOID)target, &val, sizeof(float), NULL);
 
-            if (GetAsyncKeyState(VK_ADD) & 1) {
-                val += 1.0f;
-                WriteProcessMemory(hProcess, (LPVOID)rOffset, &val, sizeof(float), NULL);
-                std::cout << "r[" << currentIdx << "] = " << val << std::endl;
-            }
-            if (GetAsyncKeyState(VK_SUBTRACT) & 1) {
-                val -= 1.0f;
-                WriteProcessMemory(hProcess, (LPVOID)rOffset, &val, sizeof(float), NULL);
-                std::cout << "r[" << currentIdx << "] = " << val << std::endl;
-            }
+        if (GetAsyncKeyState(VK_ADD) & 1) {
+            val += 1.0f;
+            WriteProcessMemory(hProcess, (LPVOID)target, &val, sizeof(float), NULL);
+            std::cout << "R[" << currentIdx << "] = " << val << std::endl;
+        }
+        if (GetAsyncKeyState(VK_SUBTRACT) & 1) {
+            val -= 1.0f;
+            WriteProcessMemory(hProcess, (LPVOID)target, &val, sizeof(float), NULL);
+            std::cout << "R[" << currentIdx << "] = " << val << std::endl;
         }
         if (GetAsyncKeyState(VK_ESCAPE)) break;
         Sleep(10);
     }
+
+    CloseHandle(hProcess);
     return 0;
 }
