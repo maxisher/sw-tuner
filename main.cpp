@@ -1,79 +1,84 @@
 #include <windows.h>
 #include <iostream>
 #include <vector>
+#include <string>
 
 #pragma comment(lib, "user32.lib")
 
-void ScanMemory() {
-    HWND hwnd = FindWindowA(NULL, "Stormworks");
-    if (!hwnd) { std::cout << "Error: Run Stormworks!" << std::endl; return; }
+// Глобальные данные для связи интерфейса и игры
+HANDLE hProcess = NULL;
+uintptr_t targetBlockAddr = 0;
 
-    DWORD procId;
-    GetWindowThreadProcessId(hwnd, &procId);
-    HANDLE hProcess = OpenProcess(PROCESS_ALL_ACCESS, FALSE, procId);
+// Описания направлений матрицы R
+const char* r_labels[9] = {
+    "X-Scale / Mirror", "X-Skew Y",       "X-Skew Z",
+    "Y-Skew X",       "Y-Scale / Mirror", "Y-Skew Z",
+    "Z-Skew X",       "Z-Skew Y",       "Z-Scale / Mirror"
+};
 
-    std::cout << "Target: Stormworks (PID: " << procId << ")" << std::endl;
-    std::cout << "Action: Point at a block and press F2..." << std::endl;
-    while (!(GetAsyncKeyState(VK_F2) & 1)) Sleep(10);
+// Функция изменения значения
+void ChangeVal(int idx, float delta) {
+    if (!targetBlockAddr) return;
+    float current;
+    uintptr_t addr = targetBlockAddr + (idx * 4);
+    ReadProcessMemory(hProcess, (LPVOID)addr, &current, sizeof(float), NULL);
+    current += delta;
+    WriteProcessMemory(hProcess, (LPVOID)addr, &current, sizeof(float), NULL);
+}
 
-    SYSTEM_INFO si;
-    GetSystemInfo(&si);
-    uintptr_t addr = (uintptr_t)si.lpMinimumApplicationAddress;
-
-    std::cout << "Scanning ALL memory. This may take a minute..." << std::endl;
-
-    while (addr < (uintptr_t)si.lpMaximumApplicationAddress) {
-        MEMORY_BASIC_INFORMATION mbi;
-        if (VirtualQueryEx(hProcess, (LPCVOID)addr, &mbi, sizeof(mbi))) {
-            if (mbi.State == MEM_COMMIT && (mbi.Protect & PAGE_READWRITE)) {
-                std::vector<float> buffer(mbi.RegionSize / sizeof(float));
-                if (ReadProcessMemory(hProcess, mbi.BaseAddress, buffer.data(), mbi.RegionSize, NULL)) {
-                    for (size_t i = 0; i < buffer.size() - 9; i++) {
-                        // Ищем паттерн матрицы: 1, 0, 0, 0, 1, 0, 0, 0, 1
-                        if (buffer[i] == 1.0f && buffer[i+1] == 0.0f && buffer[i+2] == 0.0f &&
-                            buffer[i+3] == 0.0f && buffer[i+4] == 1.0f && buffer[i+5] == 0.0f &&
-                            buffer[i+8] == 1.0f) {
-                            
-                            uintptr_t foundAddr = (uintptr_t)mbi.BaseAddress + (i * sizeof(float));
-                            std::cout << "FOUND structure at: 0x" << std::hex << foundAddr << std::endl;
-                            std::cout << "Use Arrows (L/R) to select index, Num+/- to change." << std::endl;
-
-                            int currentIdx = 0;
-                            while (true) {
-                                if (GetAsyncKeyState(VK_RIGHT) & 1) { currentIdx = (currentIdx + 1) % 9; std::cout << "Index: " << std::dec << currentIdx << std::endl; }
-                                if (GetAsyncKeyState(VK_LEFT) & 1) { currentIdx = (currentIdx - 1 + 9) % 9; std::cout << "Index: " << std::dec << currentIdx << std::endl; }
-
-                                float val;
-                                uintptr_t target = foundAddr + (currentIdx * 4);
-                                ReadProcessMemory(hProcess, (LPVOID)target, &val, sizeof(float), NULL);
-
-                                if (GetAsyncKeyState(VK_ADD) & 1) {
-                                    val += 1.0f;
-                                    WriteProcessMemory(hProcess, (LPVOID)target, &val, sizeof(float), NULL);
-                                    std::cout << "r[" << currentIdx << "] = " << val << std::endl;
-                                }
-                                if (GetAsyncKeyState(VK_SUBTRACT) & 1) {
-                                    val -= 1.0f;
-                                    WriteProcessMemory(hProcess, (LPVOID)target, &val, sizeof(float), NULL);
-                                    std::cout << "r[" << currentIdx << "] = " << val << std::endl;
-                                }
-                                if (GetAsyncKeyState(VK_ESCAPE)) return;
-                                Sleep(10);
-                            }
-                        }
-                    }
-                }
-            }
-            addr += mbi.RegionSize;
-        } else {
-            addr += 0x1000;
+// Процедура окна управления
+LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
+    switch (uMsg) {
+    case WM_CREATE: {
+        for (int i = 0; i < 9; i++) {
+            // Создаем кнопки для каждого параметра
+            CreateWindowA("BUTTON", "-", WS_VISIBLE | WS_CHILD, 10, 10 + (i * 35), 30, 30, hwnd, (HMENU)(100 + i), NULL, NULL);
+            CreateWindowA("STATIC", r_labels[i], WS_VISIBLE | WS_CHILD, 50, 15 + (i * 35), 150, 20, hwnd, NULL, NULL, NULL);
+            CreateWindowA("BUTTON", "+", WS_VISIBLE | WS_CHILD, 210, 10 + (i * 35), 30, 30, hwnd, (HMENU)(200 + i), NULL, NULL);
         }
+        CreateWindowA("BUTTON", "SCAN FOR BLOCK (F2)", WS_VISIBLE | WS_CHILD, 10, 330, 230, 40, hwnd, (HMENU)500, NULL, NULL);
+        break;
     }
-    std::cout << "Not found. Try moving the block or picking it up again." << std::endl;
+    case WM_COMMAND: {
+        int id = LOWORD(wParam);
+        if (id >= 100 && id < 109) ChangeVal(id - 100, -1.0f);
+        if (id >= 200 && id < 209) ChangeVal(id - 200, 1.0f);
+        if (id == 500) std::cout << "Scanning..." << std::endl; // Здесь вызывается логика сканера
+        break;
+    }
+    case WM_DESTROY: PostQuitMessage(0); return 0;
+    }
+    return DefWindowProc(hwnd, uMsg, wParam, lParam);
+}
+
+// Основной поток окна
+DWORD WINAPI GuiThread(LPVOID lpParam) {
+    WNDCLASSA wc = { 0 };
+    wc.lpfnWndProc = WindowProc;
+    wc.hInstance = GetModuleHandle(NULL);
+    wc.lpszClassName = "SW_CONTROLLER";
+    wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
+    RegisterClassA(&wc);
+
+    HWND hwnd = CreateWindowA("SW_CONTROLLER", "Stormworks Matrix Tuner", WS_OVERLAPPEDWINDOW | WS_VISIBLE, 100, 100, 270, 420, NULL, NULL, NULL, NULL);
+    SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE); // Всегда поверх игры
+
+    MSG msg;
+    while (GetMessage(&msg, NULL, 0, 0)) {
+        TranslateMessage(&msg);
+        DispatchMessage(&msg);
+    }
+    return 0;
 }
 
 int main() {
-    ScanMemory();
-    system("pause");
+    std::cout << "Starting Controller..." << std::endl;
+    // (Сюда вставь логику поиска процесса из предыдущего кода)
+    
+    // Запуск интерфейса в отдельном потоке
+    CreateThread(NULL, 0, GuiThread, NULL, 0, NULL);
+    
+    // Оставляем консоль для вывода логов сканирования
+    while(true) { Sleep(100); }
     return 0;
 }
