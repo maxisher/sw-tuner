@@ -6,12 +6,13 @@
 
 #pragma comment(lib, "user32.lib")
 #pragma comment(lib, "gdi32.lib")
+#pragma comment(lib, "shell32.lib")
 
 HANDLE hProc = NULL;
 uintptr_t targetAddr = 0;
 std::map<uintptr_t, float> memorySnapshot;
 
-// Функция изменения значений матрицы
+// Функция модификации значения в памяти
 void ModifyValue(int idx, float delta) {
     if (!targetAddr || !hProc) return;
     float current;
@@ -23,19 +24,19 @@ void ModifyValue(int idx, float delta) {
     }
 }
 
-// Поиск адреса через изменение (вращение блока)
+// Захват блока через дельту вращения
 void CaptureActiveBlock() {
     memorySnapshot.clear();
     SYSTEM_INFO si;
     GetSystemInfo(&si);
-    uintptr_t addr = 0x100000000; 
+    uintptr_t addr = (uintptr_t)si.lpMinimumApplicationAddress;
 
-    std::cout << "[*] Step 1: Taking snapshot. PLEASE WAIT..." << std::endl;
+    std::cout << "[*] Step 1: Taking memory snapshot. Wait..." << std::endl;
 
-    while (addr < 0x600000000) {
+    while (addr < 0x7FFFFFFFFFFF) {
         MEMORY_BASIC_INFORMATION mbi;
         if (VirtualQueryEx(hProc, (LPCVOID)addr, &mbi, sizeof(mbi))) {
-            if (mbi.State == MEM_COMMIT && mbi.Protect == PAGE_READWRITE && mbi.RegionSize < 0x5000000) {
+            if (mbi.State == MEM_COMMIT && mbi.Protect == PAGE_READWRITE && mbi.RegionSize < 0x10000000) {
                 std::vector<float> buffer(mbi.RegionSize / sizeof(float));
                 if (ReadProcessMemory(hProc, mbi.BaseAddress, buffer.data(), mbi.RegionSize, NULL)) {
                     for (size_t i = 0; i < buffer.size(); i++) {
@@ -46,23 +47,24 @@ void CaptureActiveBlock() {
                 }
             }
             addr += mbi.RegionSize;
-        } else addr += 0x1000;
+        } else { addr += 0x1000; }
+        if (memorySnapshot.size() > 500000) break; // Лимит для скорости
     }
 
-    std::cout << "[!] Snapshot done. ROTATE THE BLOCK in game and PRESS F3!" << std::endl;
+    std::cout << "[!] Snapshot done. ROTATE THE BLOCK in Stormworks and press F3!" << std::endl;
     while (!(GetAsyncKeyState(VK_F3) & 1)) Sleep(10);
 
     for (auto const& [ptr, oldVal] : memorySnapshot) {
         float newVal;
         if (ReadProcessMemory(hProc, (LPVOID)ptr, &newVal, sizeof(float), NULL)) {
             if (newVal != oldVal && (newVal == 1.0f || newVal == -1.0f || newVal == 0.0f)) {
-                targetAddr = ptr - (ptr % 36); 
-                std::cout << "[SUCCESS] Found block matrix at: 0x" << std::hex << targetAddr << std::dec << std::endl;
+                targetAddr = ptr - (ptr % 36); // Центрирование на начало матрицы 3x3
+                std::cout << "[SUCCESS] Target Matrix Address: 0x" << std::hex << targetAddr << std::dec << std::endl;
                 return;
             }
         }
     }
-    std::cout << "[FAIL] No rotation detected." << std::endl;
+    std::cout << "[FAIL] No changes detected. Try again." << std::endl;
 }
 
 LRESULT CALLBACK WinProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
@@ -91,11 +93,11 @@ LRESULT CALLBACK WinProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
 int main() {
     HWND gHwnd = FindWindowA(NULL, "Stormworks");
-    if (!gHwnd) { 
-        std::cout << "Error: Stormworks not found!" << std::endl; 
-        Sleep(3000); return 1; 
+    if (!gHwnd) {
+        std::cout << "Please launch Stormworks first!" << std::endl;
+        Sleep(3000); return 1;
     }
-    DWORD pId; 
+    DWORD pId;
     GetWindowThreadProcessId(gHwnd, &pId);
     hProc = OpenProcess(PROCESS_ALL_ACCESS, FALSE, pId);
 
@@ -105,9 +107,9 @@ int main() {
     wc.lpszClassName = "SW_Tuner_Class";
     wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
     RegisterClassA(&wc);
-    
-    CreateWindowA("SW_Tuner_Class", "SW Matrix Editor", WS_OVERLAPPEDWINDOW | WS_VISIBLE, 100, 100, 250, 420, NULL, NULL, NULL, NULL);
-    std::cout << "Tuner Interface Ready. Start CAPTURE." << std::endl;
+
+    CreateWindowExA(WS_EX_TOPMOST, "SW_Tuner_Class", "SW Matrix Editor", WS_OVERLAPPEDWINDOW | WS_VISIBLE, 100, 100, 250, 420, NULL, NULL, NULL, NULL);
+    std::cout << "Tuner Interface Active." << std::endl;
 
     MSG m;
     while (GetMessage(&m, NULL, 0, 0)) { TranslateMessage(&m); DispatchMessage(&m); }
