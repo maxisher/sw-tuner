@@ -2,7 +2,6 @@
 #include <iostream>
 #include <vector>
 #include <tlhelp32.h>
-#include <string>
 
 #pragma comment(lib, "user32.lib")
 
@@ -44,54 +43,46 @@ uintptr_t FindPattern(HANDLE hProcess, uintptr_t start, DWORD size, const unsign
 }
 
 int main() {
-    std::cout << "=== NetErrror SW Tuner DEBUG MODE ===" << std::endl;
+    std::cout << "=== NetErrror SW Tuner [FIXED PATTERN] ===" << std::endl;
 
     HWND hwnd = FindWindowA(NULL, "Stormworks");
     if (!hwnd) {
-        std::cout << "[!] ERROR: Stormworks window not found! Start the game first." << std::endl;
-        system("pause");
-        return 1;
+        std::cout << "[!] ERROR: Stormworks window not found!" << std::endl;
+        system("pause"); return 1;
     }
 
     DWORD procId;
     GetWindowThreadProcessId(hwnd, &procId);
     HANDLE hProcess = OpenProcess(PROCESS_ALL_ACCESS, FALSE, procId);
-    if (!hProcess) {
-        std::cout << "[!] ERROR: Access Denied! Run this program AS ADMINISTRATOR." << std::endl;
-        system("pause");
-        return 1;
-    }
-
     uintptr_t baseAddr = GetModuleBaseAddress(procId, "stormworks64.exe");
-    if (!baseAddr) {
-        std::cout << "[!] ERROR: Could not find stormworks64.exe module." << std::endl;
-        system("pause");
-        return 1;
+
+    if (!hProcess || !baseAddr) {
+        std::cout << "[!] ERROR: No Admin Rights or Process access!" << std::endl;
+        system("pause"); return 1;
     }
 
-    const unsigned char* pattern = (const unsigned char*)"\x48\x8B\x05\x00\x00\x00\x00\x48\x83\xC4\x20\x5B\xC3";
-    const char* mask = "xxx????xxxxxx";
+    // НОВАЯ ГИБКАЯ СИГНАТУРА
+    const unsigned char* pattern = (const unsigned char*)"\x48\x8B\x0D\x00\x00\x00\x00\x48\x85\xC9\x74\x00\x48\x8B\x01\xFF\x50\x00\x48\x8B\xD8";
+    const char* mask = "xxx????xxxx?xxxxx?xxx";
     
-    std::cout << "[*] Scanning memory for block pointers..." << std::endl;
-    uintptr_t patternAddr = FindPattern(hProcess, baseAddr, 0x5000000, pattern, mask);
+    std::cout << "[*] Scanning memory with new pattern..." << std::endl;
+    uintptr_t patternAddr = FindPattern(hProcess, baseAddr, 0xA000000, pattern, mask);
     
     if (!patternAddr) {
-        std::cout << "[!] ERROR: Pattern not found. The game might have updated." << std::endl;
-        system("pause");
-        return 1;
+        std::cout << "[!] ERROR: New pattern also failed. Game version is incompatible." << std::endl;
+        system("pause"); return 1;
     }
 
     int32_t relativeAddr;
     ReadProcessMemory(hProcess, (LPVOID)(patternAddr + 3), &relativeAddr, sizeof(relativeAddr), NULL);
     uintptr_t selectedBlockPtr = patternAddr + 7 + relativeAddr;
 
-    std::cout << "[SUCCESS] Script is running!" << std::endl;
-    std::cout << "Select a block in the editor and use ARROWS + Num+/-" << std::endl;
+    std::cout << "[SUCCESS] Script active! Index range: 0-8" << std::endl;
 
     int currentIdx = 0;
     while (true) {
-        if (GetAsyncKeyState(VK_RIGHT) & 1) { currentIdx = (currentIdx + 1) % 9; std::cout << "Matrix Index: " << currentIdx << std::endl; }
-        if (GetAsyncKeyState(VK_LEFT) & 1) { currentIdx = (currentIdx - 1 + 9) % 9; std::cout << "Matrix Index: " << currentIdx << std::endl; }
+        if (GetAsyncKeyState(VK_RIGHT) & 1) { currentIdx = (currentIdx + 1) % 9; std::cout << "Target: r[" << currentIdx << "]" << std::endl; }
+        if (GetAsyncKeyState(VK_LEFT) & 1) { currentIdx = (currentIdx - 1 + 9) % 9; std::cout << "Target: r[" << currentIdx << "]" << std::endl; }
 
         uintptr_t activeBlock;
         if (ReadProcessMemory(hProcess, (LPVOID)selectedBlockPtr, &activeBlock, sizeof(activeBlock), NULL) && activeBlock != 0) {
@@ -102,18 +93,16 @@ int main() {
             if (GetAsyncKeyState(VK_ADD) & 1) {
                 val += 1.0f;
                 WriteProcessMemory(hProcess, (LPVOID)rOffset, &val, sizeof(float), NULL);
-                std::cout << "Updated R[" << currentIdx << "] to " << val << std::endl;
+                std::cout << "r[" << currentIdx << "] = " << val << std::endl;
             }
             if (GetAsyncKeyState(VK_SUBTRACT) & 1) {
                 val -= 1.0f;
                 WriteProcessMemory(hProcess, (LPVOID)rOffset, &val, sizeof(float), NULL);
-                std::cout << "Updated R[" << currentIdx << "] to " << val << std::endl;
+                std::cout << "r[" << currentIdx << "] = " << val << std::endl;
             }
         }
         if (GetAsyncKeyState(VK_ESCAPE)) break;
         Sleep(10);
     }
-
-    CloseHandle(hProcess);
     return 0;
 }
