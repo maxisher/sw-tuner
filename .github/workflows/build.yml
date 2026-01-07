@@ -8,7 +8,7 @@ jobs:
       - name: Setup MSVC
         uses: ilammy/msvc-dev-cmd@v1
       - name: Compile
-        run: cl.exe /EHsc /O2 /D_CRT_SECURE_NO_WARNINGS main.cpp /Fe:SW_Tuner.exe
+        run: cl.exe /EHsc /O2 /std:c++17 /D_CRT_SECURE_NO_WARNINGS main.cpp /Fe:SW_Tuner.exe user32.lib gdi32.lib
       - name: Upload Result
         uses: actions/upload-artifact@v4
         with:
