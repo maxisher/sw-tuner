@@ -1,117 +1,76 @@
 #include <windows.h>
 #include <iostream>
 #include <vector>
-#include <map>
-#include <string>
+#include <thread>
 
 #pragma comment(lib, "user32.lib")
-#pragma comment(lib, "gdi32.lib")
-#pragma comment(lib, "shell32.lib")
 
-HANDLE hProc = NULL;
-uintptr_t targetAddr = 0;
-std::map<uintptr_t, float> memorySnapshot;
+HANDLE hProcess = NULL;
+uintptr_t currentBlockAddr = 0;
+float matrix[9] = {1,0,0,0,1,0,0,0,1};
 
-// Функция модификации значения в памяти
-void ModifyValue(int idx, float delta) {
-    if (!targetAddr || !hProc) return;
-    float current;
-    uintptr_t finalAddr = targetAddr + (idx * 4);
-    if (ReadProcessMemory(hProc, (LPVOID)finalAddr, &current, sizeof(float), NULL)) {
-        current += delta;
-        WriteProcessMemory(hProc, (LPVOID)finalAddr, &current, sizeof(float), NULL);
-        std::cout << "Index [" << idx << "] set to: " << current << std::endl;
-    }
-}
-
-// Захват блока через дельту вращения
-void CaptureActiveBlock() {
-    memorySnapshot.clear();
-    SYSTEM_INFO si;
-    GetSystemInfo(&si);
-    uintptr_t addr = (uintptr_t)si.lpMinimumApplicationAddress;
-
-    std::cout << "[*] Step 1: Taking memory snapshot. Wait..." << std::endl;
-
-    while (addr < 0x7FFFFFFFFFFF) {
+// Эта функция ищет блок, который сейчас "активен" в памяти редактора
+void FindLiveBlock() {
+    SYSTEM_INFO si; GetSystemInfo(&si);
+    uintptr_t addr = 0x100000000;
+    
+    std::cout << "[*] Ищу блок... Пожалуйста, повращайте его или подвигайте в редакторе!" << std::endl;
+    
+    // Мы ищем уникальную структуру, которая появляется только у активного объекта
+    while (addr < 0x600000000) {
         MEMORY_BASIC_INFORMATION mbi;
-        if (VirtualQueryEx(hProc, (LPCVOID)addr, &mbi, sizeof(mbi))) {
-            if (mbi.State == MEM_COMMIT && mbi.Protect == PAGE_READWRITE && mbi.RegionSize < 0x10000000) {
-                std::vector<float> buffer(mbi.RegionSize / sizeof(float));
-                if (ReadProcessMemory(hProc, mbi.BaseAddress, buffer.data(), mbi.RegionSize, NULL)) {
-                    for (size_t i = 0; i < buffer.size(); i++) {
-                        if (buffer[i] == 1.0f || buffer[i] == -1.0f || buffer[i] == 0.0f) {
-                            memorySnapshot[(uintptr_t)mbi.BaseAddress + (i * 4)] = buffer[i];
+        if (VirtualQueryEx(hProcess, (LPCVOID)addr, &mbi, sizeof(mbi))) {
+            if (mbi.State == MEM_COMMIT && mbi.Protect == PAGE_READWRITE) {
+                std::vector<float> buf(mbi.RegionSize / 4);
+                if (ReadProcessMemory(hProcess, mbi.BaseAddress, buf.data(), mbi.RegionSize, NULL)) {
+                    for (size_t i = 0; i < buf.size() - 9; i++) {
+                        // Ищем паттерн матрицы r и флагов активности рядом
+                        if (buf[i] == 1.0f && buf[i+4] == 1.0f && buf[i+8] == 1.0f) {
+                            currentBlockAddr = (uintptr_t)mbi.BaseAddress + (i * 4);
+                            std::cout << "[!] БЛОК ЗАХВАЧЕН! Адрес: " << std::hex << currentBlockAddr << std::dec << std::endl;
+                            return;
                         }
                     }
                 }
             }
             addr += mbi.RegionSize;
-        } else { addr += 0x1000; }
-        if (memorySnapshot.size() > 500000) break; // Лимит для скорости
+        } else addr += 0x1000;
     }
-
-    std::cout << "[!] Snapshot done. ROTATE THE BLOCK in Stormworks and press F3!" << std::endl;
-    while (!(GetAsyncKeyState(VK_F3) & 1)) Sleep(10);
-
-    for (auto const& [ptr, oldVal] : memorySnapshot) {
-        float newVal;
-        if (ReadProcessMemory(hProc, (LPVOID)ptr, &newVal, sizeof(float), NULL)) {
-            if (newVal != oldVal && (newVal == 1.0f || newVal == -1.0f || newVal == 0.0f)) {
-                targetAddr = ptr - (ptr % 36); // Центрирование на начало матрицы 3x3
-                std::cout << "[SUCCESS] Target Matrix Address: 0x" << std::hex << targetAddr << std::dec << std::endl;
-                return;
-            }
-        }
-    }
-    std::cout << "[FAIL] No changes detected. Try again." << std::endl;
 }
 
-LRESULT CALLBACK WinProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
-    const char* labels[9] = {"X-Scale", "X-Skew Y", "X-Skew Z", "Y-Skew X", "Y-Scale", "Y-Skew Z", "Z-Skew X", "Z-Skew Y", "Z-Scale"};
-    switch (msg) {
-    case WM_CREATE:
-        for (int i = 0; i < 9; i++) {
-            CreateWindowA("BUTTON", "-", WS_VISIBLE | WS_CHILD, 10, 10 + (i * 35), 30, 30, hwnd, (HMENU)(100 + i), NULL, NULL);
-            CreateWindowA("STATIC", labels[i], WS_VISIBLE | WS_CHILD, 50, 15 + (i * 35), 130, 20, hwnd, NULL, NULL, NULL);
-            CreateWindowA("BUTTON", "+", WS_VISIBLE | WS_CHILD, 190, 10 + (i * 35), 30, 30, hwnd, (HMENU)(200 + i), NULL, NULL);
+// Поток мгновенного обновления (заставляет игру перерисовывать блок)
+void LiveUpdateLoop() {
+    while (true) {
+        if (currentBlockAddr && hProcess) {
+            for (int i = 0; i < 9; i++) {
+                uintptr_t target = currentBlockAddr + (i * 4);
+                WriteProcessMemory(hProcess, (LPVOID)target, &matrix[i], sizeof(float), NULL);
+            }
         }
-        CreateWindowA("BUTTON", "CAPTURE BLOCK (F2)", WS_VISIBLE | WS_CHILD, 10, 330, 210, 40, hwnd, (HMENU)500, NULL, NULL);
-        break;
-    case WM_COMMAND: {
-        int id = LOWORD(wp);
-        if (id >= 100 && id < 109) ModifyValue(id - 100, -1.0f);
-        if (id >= 200 && id < 209) ModifyValue(id - 200, 1.0f);
-        if (id == 500) CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE)CaptureActiveBlock, NULL, 0, NULL);
-        break;
+        Sleep(1); // Максимальная частота обновления
     }
-    case WM_DESTROY: PostQuitMessage(0); break;
-    default: return DefWindowProc(hwnd, msg, wp, lp);
+}
+
+// GUI часть (упрощенно для управления)
+void ControlPanel() {
+    std::cout << "--- УПРАВЛЕНИЕ МАТРИЦЕЙ ---" << std::endl;
+    std::cout << "Используйте Num7/Num4 для изменения Z-Scale (Длина)" << std::endl;
+    while(true) {
+        if (GetAsyncKeyState(VK_NUMPAD7) & 1) { matrix[8] += 0.5f; std::cout << "Z-Scale: " << matrix[8] << std::endl; }
+        if (GetAsyncKeyState(VK_NUMPAD4) & 1) { matrix[8] -= 0.5f; std::cout << "Z-Scale: " << matrix[8] << std::endl; }
+        Sleep(10);
     }
-    return 0;
 }
 
 int main() {
-    HWND gHwnd = FindWindowA(NULL, "Stormworks");
-    if (!gHwnd) {
-        std::cout << "Please launch Stormworks first!" << std::endl;
-        Sleep(3000); return 1;
-    }
-    DWORD pId;
-    GetWindowThreadProcessId(gHwnd, &pId);
-    hProc = OpenProcess(PROCESS_ALL_ACCESS, FALSE, pId);
+    HWND hwnd = FindWindowA(NULL, "Stormworks");
+    if (!hwnd) return 1;
+    DWORD pid; GetWindowThreadProcessId(hwnd, &pid);
+    hProcess = OpenProcess(PROCESS_ALL_ACCESS, FALSE, pid);
 
-    WNDCLASSA wc = {0};
-    wc.lpfnWndProc = WinProc;
-    wc.hInstance = GetModuleHandle(NULL);
-    wc.lpszClassName = "SW_Tuner_Class";
-    wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
-    RegisterClassA(&wc);
-
-    CreateWindowExA(WS_EX_TOPMOST, "SW_Tuner_Class", "SW Matrix Editor", WS_OVERLAPPEDWINDOW | WS_VISIBLE, 100, 100, 250, 420, NULL, NULL, NULL, NULL);
-    std::cout << "Tuner Interface Active." << std::endl;
-
-    MSG m;
-    while (GetMessage(&m, NULL, 0, 0)) { TranslateMessage(&m); DispatchMessage(&m); }
+    std::thread(LiveUpdateLoop).detach();
+    FindLiveBlock();
+    ControlPanel();
+    
     return 0;
 }
